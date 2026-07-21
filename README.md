@@ -2,6 +2,9 @@
 
 一个纯静态H5工具，帮助玩家计算装备强化材料消耗和最优开箱策略。
 
+<img width="1479" height="926" alt="image" src="https://github.com/user-attachments/assets/572297d7-7016-480d-9e8b-abd81a910834" />
+
+
 ## 功能特点
 
 - **两种计算模式**
