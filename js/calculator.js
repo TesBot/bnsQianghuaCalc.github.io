@@ -126,12 +126,21 @@ function calculateUpgrade(equipKey, fromLevel, targetLevel, ownedStones, ownedBo
  */
 function canFulfill(needs, ownedStones, ownedBoxes, strategy) {
   const netNeeds = {};
+  const pool = { green: 0, blue: 0, purple: 0, orange: 0 };
+
+  // 计算净需求，多余强化石加入转换池
   for (const tier of TIER_ORDER) {
-    netNeeds[tier] = Math.max(0, (needs[tier] || 0) - (ownedStones[tier] || 0));
+    const need = needs[tier] || 0;
+    const owned = ownedStones[tier] || 0;
+    if (owned >= need) {
+      netNeeds[tier] = 0;
+      pool[tier] += owned - need; // 多余的加入池中
+    } else {
+      netNeeds[tier] = need - owned;
+    }
   }
 
   const boxes = { ...ownedBoxes };
-  const pool = { green: 0, blue: 0, purple: 0, orange: 0 };
   const remaining = { ...netNeeds };
 
   // 循环处理，直到没有进展或全部满足
@@ -282,15 +291,27 @@ function canFulfill(needs, ownedStones, ownedBoxes, strategy) {
  */
 function generatePlan(equipKey, fromLevel, toLevel, needs, ownedStones, ownedBoxes, strategy, boxNumber) {
   const netNeeds = {};
+  const pool = { green: 0, blue: 0, purple: 0, orange: 0 };
+  const stonesUsed = { green: 0, blue: 0, purple: 0, orange: 0 };
+
+  // 计算净需求，多余强化石加入转换池
   for (const tier of TIER_ORDER) {
-    netNeeds[tier] = Math.max(0, (needs[tier] || 0) - (ownedStones[tier] || 0));
+    const need = needs[tier] || 0;
+    const owned = ownedStones[tier] || 0;
+    if (owned >= need) {
+      netNeeds[tier] = 0;
+      stonesUsed[tier] = need;
+      pool[tier] += owned - need; // 多余的加入池中
+    } else {
+      netNeeds[tier] = need - owned;
+      stonesUsed[tier] = owned;
+    }
   }
 
   const boxesLeft = { ...ownedBoxes };
   const boxesToOpen = { green: 0, blue: 0, purple: 0, orange: 0 };
   const conversions = [];
   let silverCost = 0;
-  const pool = { green: 0, blue: 0, purple: 0, orange: 0 };
   const remaining = { ...netNeeds };
 
   for (let round = 0; round < 20; round++) {
