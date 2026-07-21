@@ -1,0 +1,371 @@
+/**
+ * 剑灵怀旧服装备强化计算器 - 核心算法
+ */
+
+function calcMaterialNeeds(equipKey, fromLevel, toLevel) {
+  const equip = EQUIPMENT[equipKey];
+  const costTable = COST_TABLE[equip.category];
+  const needs = { green: 0, blue: 0, purple: 0, orange: 0 };
+  let totalGold = 0;
+  let totalDiscountGold = 0;
+
+  for (let level = fromLevel; level < toLevel; level++) {
+    const step = costTable[level];
+    needs[step.tier] += step.count;
+    totalGold += step.gold;
+    totalDiscountGold += step.discount;
+  }
+
+  return { needs, totalGold, totalDiscountGold };
+}
+
+function calcAttributeGains(equipKey, fromLevel, toLevel) {
+  const attrs = ATTRIBUTES[equipKey];
+  const gains = {};
+  for (const stat in attrs) {
+    const values = attrs[stat];
+    gains[stat] = (toLevel > 0 ? values[toLevel - 1] : 0) - (fromLevel > 0 ? values[fromLevel - 1] : 0);
+  }
+
+  let redTextAttack = 0;
+  const redTexts = RED_TEXT_ATTRIBUTES[equipKey];
+  if (redTexts) {
+    for (const level in redTexts) {
+      const levelNum = parseInt(level);
+      if (fromLevel < levelNum && toLevel >= levelNum) {
+        redTextAttack += redTexts[levelNum].min;
+      }
+    }
+  }
+
+  gains.redTextAttack = redTextAttack;
+  gains.totalAttack = (gains.attack || 0) + redTextAttack;
+  return gains;
+}
+
+/**
+ * 核心计算函数 - 先计算总需求，再分配资源
+ */
+function calculateUpgrade(equipKey, fromLevel, targetLevel, ownedStones, ownedBoxes, strategy) {
+  const equip = EQUIPMENT[equipKey];
+  const boxNumber = equip.box;
+  const costTable = COST_TABLE[equip.category];
+  const quality = QUALITY_CONFIG[appState.selectedQuality];
+  const maxPossible = Math.min(targetLevel, quality.maxLevel);
+
+  // 逐级尝试，找到最大可达等级
+  let maxReached = fromLevel;
+
+  for (let testLevel = maxPossible; testLevel > fromLevel; testLevel--) {
+    const { needs } = calcMaterialNeeds(equipKey, fromLevel, testLevel);
+
+    // 检查总资源是否足够（含转换）
+    if (canFulfill(needs, ownedStones, ownedBoxes, strategy)) {
+      maxReached = testLevel;
+      break;
+    }
+  }
+
+  // 为最大可达等级生成详细方案
+  const { needs: finalNeeds } = calcMaterialNeeds(equipKey, fromLevel, maxReached);
+  const result = generatePlan(equipKey, fromLevel, maxReached, finalNeeds, ownedStones, ownedBoxes, strategy, boxNumber);
+
+  // 生成升级结果
+  const targetReached = maxReached >= targetLevel;
+  const upgradeResults = [];
+
+  for (let level = fromLevel; level < maxReached; level++) {
+    const stepCost = costTable[level];
+    upgradeResults.push({
+      level: level + 1,
+      tier: stepCost.tier,
+      count: stepCost.count,
+      gold: stepCost.gold,
+      discount: stepCost.discount,
+      method: 'converted'
+    });
+  }
+
+  for (let level = maxReached; level < targetLevel; level++) {
+    const stepCost = costTable[level];
+    upgradeResults.push({
+      level: level + 1,
+      tier: stepCost.tier,
+      count: stepCost.count,
+      gold: stepCost.gold,
+      discount: stepCost.discount,
+      method: 'failed',
+      shortfall: stepCost.count
+    });
+  }
+
+  return {
+    targetLevel,
+    maxReached,
+    targetReached,
+    upgradeResults,
+    conversionSteps: result.steps,
+    totalNeeds: finalNeeds,
+    totalGoldCost: upgradeResults.filter(r => r.method !== 'failed').reduce((sum, r) => sum + r.gold, 0),
+    totalDiscountGoldCost: upgradeResults.filter(r => r.method !== 'failed').reduce((sum, r) => sum + r.discount, 0),
+    totalSilverCost: result.silverCost,
+    remainingPool: result.remainingPool,
+    remainingBoxes: result.remainingBoxes
+  };
+}
+
+/**
+ * 检查总资源是否能满足需求
+ */
+function canFulfill(needs, ownedStones, ownedBoxes, strategy) {
+  const netNeeds = {};
+  for (const tier of TIER_ORDER) {
+    netNeeds[tier] = Math.max(0, (needs[tier] || 0) - (ownedStones[tier] || 0));
+  }
+
+  const boxes = { ...ownedBoxes };
+  const pool = { green: 0, blue: 0, purple: 0, orange: 0 };
+  const remaining = { ...netNeeds };
+
+  let maxIterations = 20;
+  while (maxIterations-- > 0) {
+    let progress = false;
+
+    for (let idx = 0; idx < 4; idx++) {
+      const tier = TIER_ORDER[idx];
+      let need = remaining[tier];
+      if (need <= 0) continue;
+
+      const fromPool = Math.min(need, pool[tier]);
+      if (fromPool > 0) {
+        pool[tier] -= fromPool;
+        need -= fromPool;
+        progress = true;
+      }
+
+      const fromBoxes = Math.min(need, boxes[tier] || 0);
+      if (fromBoxes > 0) {
+        boxes[tier] -= fromBoxes;
+        need -= fromBoxes;
+        progress = true;
+      }
+
+      if (need <= 0) {
+        remaining[tier] = 0;
+        if (need < 0) pool[tier] += -need;
+        continue;
+      }
+
+      // 尝试转换
+      for (let j = idx - 1; j >= 0 && need > 0; j--) {
+        const lowTier = TIER_ORDER[j];
+        const ratio = Math.pow(2, idx - j);
+
+        while (pool[lowTier] >= ratio && need > 0) {
+          const maxOutput = Math.floor(pool[lowTier] / ratio);
+          const actualOutput = Math.min(maxOutput, need);
+          if (actualOutput <= 0) break;
+          pool[lowTier] -= actualOutput * ratio;
+          need -= actualOutput;
+          progress = true;
+        }
+
+        while (boxes[lowTier] >= 2 && need > 0) {
+          const needBoxes = Math.min(boxes[lowTier], need * ratio);
+          if (needBoxes < 2) break;
+          boxes[lowTier] -= needBoxes;
+          need -= Math.floor(needBoxes / ratio);
+          progress = true;
+        }
+      }
+
+      for (let j = idx + 1; j < 4 && need > 0; j++) {
+        const highTier = TIER_ORDER[j];
+        const ratio = Math.pow(2, j - idx);
+
+        while (pool[highTier] > 0 && need > 0) {
+          const use = Math.min(pool[highTier], Math.ceil(need / ratio));
+          pool[highTier] -= use;
+          need -= use * ratio;
+          progress = true;
+        }
+
+        while (boxes[highTier] > 0 && need > 0) {
+          const needBoxes = Math.ceil(need / ratio);
+          const useBoxes = Math.min(needBoxes, boxes[highTier]);
+          boxes[highTier] -= useBoxes;
+          need -= useBoxes * ratio;
+          progress = true;
+        }
+      }
+
+      remaining[tier] = Math.max(0, need);
+      if (need < 0) pool[tier] += -need;
+    }
+
+    if (!progress) break;
+    if (TIER_ORDER.every(tier => remaining[tier] <= 0)) return true;
+  }
+
+  return TIER_ORDER.every(tier => remaining[tier] <= 0);
+}
+
+/**
+ * 生成详细的开箱和转换方案
+ * 核心：循环处理直到所有需求满足或无法继续
+ */
+function generatePlan(equipKey, fromLevel, toLevel, needs, ownedStones, ownedBoxes, strategy, boxNumber) {
+  const netNeeds = {};
+  for (const tier of TIER_ORDER) {
+    netNeeds[tier] = Math.max(0, (needs[tier] || 0) - (ownedStones[tier] || 0));
+  }
+
+  const boxesLeft = { ...ownedBoxes };
+  const boxesToOpen = { green: 0, blue: 0, purple: 0, orange: 0 };
+  const conversions = [];
+  let silverCost = 0;
+
+  // pool: 保存转换后的余数
+  const pool = { green: 0, blue: 0, purple: 0, orange: 0 };
+  const remaining = { ...netNeeds };
+
+  // 循环处理直到没有进展
+  let maxIterations = 20;
+  while (maxIterations-- > 0) {
+    let progress = false;
+
+    // 从低到高处理每个品阶
+    for (let idx = 0; idx < 4; idx++) {
+      const tier = TIER_ORDER[idx];
+      let need = remaining[tier];
+      if (need <= 0) continue;
+
+      // 用pool中的本品阶
+      const fromPool = Math.min(need, pool[tier]);
+      if (fromPool > 0) {
+        pool[tier] -= fromPool;
+        need -= fromPool;
+        progress = true;
+      }
+
+      // 用同品阶箱子
+      const fromBoxes = Math.min(need, boxesLeft[tier] || 0);
+      if (fromBoxes > 0) {
+        boxesLeft[tier] -= fromBoxes;
+        boxesToOpen[tier] += fromBoxes;
+        need -= fromBoxes;
+        progress = true;
+      }
+
+      if (need <= 0) {
+        remaining[tier] = 0;
+        if (need < 0) pool[tier] += -need;
+        continue;
+      }
+
+      // 尝试从低阶合成
+      for (let j = idx - 1; j >= 0 && need > 0; j--) {
+        const lowTier = TIER_ORDER[j];
+        const ratio = Math.pow(2, idx - j);
+
+        // 用pool中的低阶
+        while (pool[lowTier] >= ratio && need > 0) {
+          const maxOutput = Math.floor(pool[lowTier] / ratio);
+          const actualOutput = Math.min(maxOutput, need);
+          if (actualOutput <= 0) break;
+          const consumed = actualOutput * ratio;
+          pool[lowTier] -= consumed;
+          need -= actualOutput;
+          progress = true;
+
+          let chainCount = consumed;
+          for (let k = j; k < idx; k++) {
+            const chainResult = Math.floor(chainCount / 2);
+            const r = CONVERSION_RULES.merge.find(r => r.from === TIER_ORDER[k]);
+            conversions.push({ type: 'merge', from: TIER_ORDER[k], to: TIER_ORDER[k+1], count: chainCount, result: chainResult, cost: chainResult * r.costSilver });
+            silverCost += chainResult * r.costSilver;
+            chainCount = chainResult;
+          }
+        }
+
+        // 用低阶箱子
+        while (need > 0 && boxesLeft[lowTier] >= 2) {
+          const needBoxes = Math.min(boxesLeft[lowTier], need * ratio);
+          if (needBoxes < 2) break;
+          boxesLeft[lowTier] -= needBoxes;
+          boxesToOpen[lowTier] += needBoxes;
+
+          const actualOutput = Math.floor(needBoxes / ratio);
+          const remainder = needBoxes - actualOutput * ratio;
+          need -= actualOutput;
+          progress = true;
+
+          let chainCount = needBoxes;
+          for (let k = j; k < idx; k++) {
+            const chainResult = Math.floor(chainCount / 2);
+            const r = CONVERSION_RULES.merge.find(r => r.from === TIER_ORDER[k]);
+            conversions.push({ type: 'merge', from: TIER_ORDER[k], to: TIER_ORDER[k+1], count: chainCount, result: chainResult, cost: chainResult * r.costSilver });
+            silverCost += chainResult * r.costSilver;
+            chainCount = chainResult;
+          }
+          if (remainder > 0) {
+            pool[lowTier] += remainder;
+          }
+        }
+      }
+
+      // 尝试从高阶分解
+      for (let j = idx + 1; j < 4 && need > 0; j++) {
+        const highTier = TIER_ORDER[j];
+        const ratio = Math.pow(2, j - idx);
+
+        while (pool[highTier] > 0 && need > 0) {
+          const use = Math.min(pool[highTier], Math.ceil(need / ratio));
+          pool[highTier] -= use;
+          let count = use;
+          for (let k = j; k > idx; k--) {
+            conversions.push({ type: 'split', from: TIER_ORDER[k], to: TIER_ORDER[k-1], count, result: count * 2, cost: 0 });
+            count *= 2;
+          }
+          need -= use * ratio;
+          progress = true;
+        }
+
+        while (boxesLeft[highTier] > 0 && need > 0) {
+          const needBoxes = Math.ceil(need / ratio);
+          const useBoxes = Math.min(needBoxes, boxesLeft[highTier]);
+          boxesLeft[highTier] -= useBoxes;
+          boxesToOpen[highTier] += useBoxes;
+          let count = useBoxes;
+          for (let k = j; k > idx; k--) {
+            conversions.push({ type: 'split', from: TIER_ORDER[k], to: TIER_ORDER[k-1], count, result: count * 2, cost: 0 });
+            count *= 2;
+          }
+          need -= useBoxes * ratio;
+          progress = true;
+        }
+      }
+
+      remaining[tier] = Math.max(0, need);
+      if (need < 0) pool[tier] += -need;
+    }
+
+    // 如果没有进展，退出
+    if (!progress) break;
+
+    // 检查是否所有需求都满足
+    const allMet = TIER_ORDER.every(tier => remaining[tier] <= 0);
+    if (allMet) break;
+  }
+
+  // 生成开箱步骤
+  const steps = [];
+  for (const tier of TIER_ORDER) {
+    if (boxesToOpen[tier] > 0) {
+      steps.push({ type: 'open', tier, count: boxesToOpen[tier], boxNumber });
+    }
+  }
+  steps.push(...conversions);
+
+  return { steps, silverCost, remainingPool: pool, remainingBoxes: boxesLeft };
+}
