@@ -35,7 +35,6 @@ function cacheElements() {
     currentLevel: document.getElementById('current-level'),
     targetLevel: document.getElementById('target-level'),
     levelArrow: document.getElementById('level-arrow'),
-    targetLabel: document.getElementById('target-label'),
     stoneTypeName: document.getElementById('stone-type-name'),
     boxTypeInfo: document.getElementById('box-type-info'),
     strategySelect: document.getElementById('strategy-select'),
@@ -167,8 +166,12 @@ function bindEvents() {
 
   // 按钮
   elements.calcBtn.addEventListener('click', calculate);
-  elements.resetInputBtn.addEventListener('click', resetInput);
-  elements.resetInventoryBtn.addEventListener('click', resetInventory);
+  if (elements.resetInputBtn) {
+    elements.resetInputBtn.addEventListener('click', resetInput);
+  }
+  if (elements.resetInventoryBtn) {
+    elements.resetInventoryBtn.addEventListener('click', resetInventory);
+  }
 }
 
 function updateEquipImage() {
@@ -243,11 +246,9 @@ function updateStoneAndBoxInfo() {
 function updateModeDisplay() {
   if (appState.mode === 2) {
     elements.levelArrow.style.display = 'none';
-    elements.targetLabel.style.display = 'none';
     elements.targetLevel.style.display = 'none';
   } else {
     elements.levelArrow.style.display = 'inline';
-    elements.targetLabel.style.display = 'inline';
     elements.targetLevel.style.display = 'inline';
   }
 }
@@ -276,6 +277,21 @@ function updateUI() {
 }
 
 function calculate() {
+  // 检查是否有强化材料
+  const hasStones = TIER_ORDER.some(tier => appState.ownedStones[tier] > 0);
+  const hasBoxes = TIER_ORDER.some(tier => appState.ownedBoxes[tier] > 0);
+
+  if (!hasStones && !hasBoxes) {
+    elements.outputSection.style.display = 'block';
+    elements.resultSteps.querySelector('.steps-content').innerHTML =
+      '<div class="mode-info warning">⚠️ 没有强化材料，请先输入已有的强化石或箱子数量</div>';
+    elements.resultNeeds.querySelector('.needs-content').innerHTML = '';
+    elements.resultGold.querySelector('.gold-content').innerHTML = '';
+    elements.resultAttrs.querySelector('.attrs-content').innerHTML = '';
+    elements.outputSection.scrollIntoView({ behavior: 'smooth' });
+    return;
+  }
+
   const equip = EQUIPMENT[appState.selectedEquip];
   const quality = QUALITY_CONFIG[appState.selectedQuality];
 
@@ -307,6 +323,12 @@ function calculate() {
 function renderResult(result) {
   elements.outputSection.style.display = 'block';
   const equip = EQUIPMENT[appState.selectedEquip];
+
+  // 清除之前的结果
+  elements.resultSteps.querySelector('.steps-content').innerHTML = '';
+  elements.resultNeeds.querySelector('.needs-content').innerHTML = '';
+  elements.resultGold.querySelector('.gold-content').innerHTML = '';
+  elements.resultAttrs.querySelector('.attrs-content').innerHTML = '';
 
   let stepsHtml = '';
 
