@@ -77,6 +77,12 @@ function calculateUpgrade(equipKey, fromLevel, targetLevel, ownedStones, ownedBo
   const { needs: finalNeeds } = calcMaterialNeeds(equipKey, fromLevel, maxReached);
   const result = generatePlan(equipKey, fromLevel, maxReached, finalNeeds, ownedStones, ownedBoxes, strategy, boxNumber);
 
+  // 计算剩余可用资源（用于显示缺少多少）
+  const remainingResources = { green: 0, blue: 0, purple: 0, orange: 0 };
+  for (const tier of TIER_ORDER) {
+    remainingResources[tier] = (result.remainingPool[tier] || 0) + (result.remainingBoxes[tier] || 0);
+  }
+
   // 生成升级结果
   const targetReached = maxReached >= targetLevel;
   const upgradeResults = [];
@@ -93,8 +99,48 @@ function calculateUpgrade(equipKey, fromLevel, targetLevel, ownedStones, ownedBo
     });
   }
 
+  // 计算失败步骤的实际缺少数量
+  const tempRemaining = { ...remainingResources };
   for (let level = maxReached; level < targetLevel; level++) {
     const stepCost = costTable[level];
+    const tier = stepCost.tier;
+    const tierIdx = TIER_ORDER.indexOf(tier);
+    let need = stepCost.count;
+
+    // 先用同品阶剩余
+    const fromSame = Math.min(need, tempRemaining[tier]);
+    tempRemaining[tier] -= fromSame;
+    need -= fromSame;
+
+    // 根据策略处理转换
+    if (need > 0) {
+      if (strategy === 'split') {
+        // 分解高品阶资源
+        for (let j = tierIdx + 1; j < 4 && need > 0; j++) {
+          const highTier = TIER_ORDER[j];
+          const ratio = Math.pow(2, j - tierIdx);
+          const highNeed = Math.ceil(need / ratio);
+          const useHigh = Math.min(highNeed, tempRemaining[highTier]);
+          if (useHigh > 0) {
+            tempRemaining[highTier] -= useHigh;
+            need -= useHigh * ratio;
+          }
+        }
+      } else {
+        // 合成低品阶资源
+        for (let j = tierIdx - 1; j >= 0 && need > 0; j--) {
+          const lowTier = TIER_ORDER[j];
+          const ratio = Math.pow(2, tierIdx - j);
+          const canMerge = Math.floor(tempRemaining[lowTier] / ratio);
+          const useMerge = Math.min(canMerge, need);
+          if (useMerge > 0) {
+            tempRemaining[lowTier] -= useMerge * ratio;
+            need -= useMerge;
+          }
+        }
+      }
+    }
+
     upgradeResults.push({
       level: level + 1,
       tier: stepCost.tier,
@@ -102,7 +148,7 @@ function calculateUpgrade(equipKey, fromLevel, targetLevel, ownedStones, ownedBo
       gold: stepCost.gold,
       discount: stepCost.discount,
       method: 'failed',
-      shortfall: stepCost.count
+      shortfall: Math.max(0, need)
     });
   }
 
